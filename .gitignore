@@ -11,8 +11,8 @@ coverage
 
 # logs
 logs
-_.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+*.log
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # dotenv environment variable files
 .env
@@ -38,3 +38,16 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Playwright MCP
 .playwright-mcp
+
+# local debug artifacts
+tmp/
+*.tmp
+*.bak
+*.pid
+*.pid.lock
+
+# local testing workspace snapshots
+Gsd-test/
+project.png
+requirements.png
+roadmap.png

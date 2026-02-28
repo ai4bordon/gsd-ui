@@ -6,6 +6,7 @@ import { parseFrontmatter } from "./frontmatter.ts"
  */
 export function parseVerification(raw: string): PhaseVerification {
   const { data, content } = parseFrontmatter(raw)
+  const normalizedContent = content.replace(/\r\n?/g, "\n")
 
   const phase = String(data.phase ?? "")
   const verified = String(data.verified ?? "")
@@ -22,7 +23,7 @@ export function parseVerification(raw: string): PhaseVerification {
     : 0
 
   // Re-verification detection
-  const reVerifMatch = content.match(
+  const reVerifMatch = normalizedContent.match(
     /\*\*Re-verification:\*\*\s*(Yes|No)/i
   )
   const reVerification =
@@ -31,7 +32,7 @@ export function parseVerification(raw: string): PhaseVerification {
   // Human verification items (if present)
   const humanVerification: NonNullable<PhaseVerification["humanVerification"]> =
     []
-  const humanSection = content.match(
+  const humanSection = normalizedContent.match(
     /(?:### Human Verification|## Human Verification)\n([\s\S]*?)(?=\n## |$)/
   )
   if (humanSection) {
@@ -60,7 +61,7 @@ export function parseVerification(raw: string): PhaseVerification {
   }
 
   // Goal achievement summary
-  const goalSection = content.match(
+  const goalSection = normalizedContent.match(
     /## (?:Goal Achievement|Summary)\n([\s\S]*?)(?=\n## |$)/
   )
   const goalAchievement = (goalSection?.[1] ?? "").trim()
@@ -76,6 +77,6 @@ export function parseVerification(raw: string): PhaseVerification {
     humanVerification:
       humanVerification.length > 0 ? humanVerification : undefined,
     goalAchievement,
-    body: content,
+    body: normalizedContent,
   }
 }

@@ -4,12 +4,21 @@ import { useLiveState } from '@/hooks/use-live-state'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/lib/utils'
 import type { ResearchDocument } from '../../server/types'
 
 function ResearchCard({ doc }: { doc: ResearchDocument }) {
+  const isResearchSummary =
+    doc.type === 'standalone' && /summary\.md$/i.test(doc.fileName)
+
   return (
     <Link to={`/document/${doc.filePath}`}>
-      <Card className="group cursor-pointer transition-colors hover:border-zinc-600">
+      <Card
+        className={cn(
+          'group cursor-pointer transition-colors hover:border-zinc-600',
+          isResearchSummary && 'border-amber-500/40 bg-amber-500/10 hover:border-amber-400/70'
+        )}
+      >
         <CardContent className="p-4">
           <div className="flex items-start justify-between">
             <div className="min-w-0 flex-1">
@@ -19,10 +28,14 @@ function ResearchCard({ doc }: { doc: ResearchDocument }) {
               </div>
               <div className="flex items-center gap-2 mt-1">
                 <Badge
-                  variant="secondary"
+                  variant={isResearchSummary ? 'warning' : 'secondary'}
                   className="text-xs"
                 >
-                  {doc.type === 'phase' ? `Phase ${doc.phase}` : 'Standalone'}
+                  {doc.type === 'phase'
+                    ? `Phase ${doc.phase}`
+                    : isResearchSummary
+                      ? 'Research Summary'
+                      : 'Standalone'}
                 </Badge>
               </div>
               {doc.headings.length > 0 && (

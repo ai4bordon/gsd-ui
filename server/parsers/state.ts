@@ -17,43 +17,76 @@ import type { ProjectState } from "../types.ts"
  */
 export function parseState(raw: string): ProjectState | null {
   try {
+    const normalized = raw.replace(/\r\n?/g, "\n")
+
     // Phase position: "Phase: 41 of 45 (Auth Frontend App)"
-    const phaseMatch = raw.match(
-      /Phase:\s*(\d+)\s*of\s*(\d+)\s*(?:\(([^)]+)\))?/
+    const phaseMatch =
+      normalized.match(
+        /Phase:\s*(\d+)\s*of\s*(\d+)\s*(?:\(([^)]+)\))?/
+      ) ??
+      normalized.match(
+        /\*\*Phase:\*\*\s*(\d+)\s*of\s*(\d+)\s*(?:\(([^)]+)\))?/
+      )
+    const currentPhaseInlineMatch = normalized.match(
+      /\*\*Phase\s*(\d+(?:\.\d+)?)\s*:/i
     )
+    const totalPhasesInlineMatch =
+      normalized.match(/Количество\s+фаз:\s*\d+\s*→\s*(\d+)/i) ??
+      normalized.match(/Фазы:\s*(\d+)/i)
+
     const currentPhase = phaseMatch
-      ? parseInt(phaseMatch[1] ?? "0", 10)
-      : 0
+      ? parseFloat(phaseMatch[1] ?? "0")
+      : currentPhaseInlineMatch
+        ? parseFloat(currentPhaseInlineMatch[1] ?? "0")
+        : 0
     const totalPhases = phaseMatch
-      ? parseInt(phaseMatch[2] ?? "0", 10)
-      : 0
-    const phaseName = (phaseMatch?.[3] ?? "").trim()
+      ? parseFloat(phaseMatch[2] ?? "0")
+      : totalPhasesInlineMatch
+        ? parseFloat(totalPhasesInlineMatch[1] ?? "0")
+        : 0
+    const focusMatch = normalized.match(/\*\*Current focus:\*\*\s*Phase\s*\d+\s*[-:]\s*(.+)$/mi)
+    const phaseName = ((phaseMatch?.[3] ?? "") || (focusMatch?.[1] ?? "")).trim()
 
     // Status line
-    const statusMatch = raw.match(/^Status:\s*(.+)$/m)
+    const statusMatch =
+      normalized.match(/^Status:\s*(.+)$/m) ??
+      normalized.match(/^-\s*\*\*Status:\*\*\s*(.+)$/m) ??
+      normalized.match(/^Статус:\s*(.+)$/m)
     const status = (statusMatch?.[1] ?? "").trim()
 
     // Last activity line
-    const lastActivityMatch = raw.match(/^Last activity:\s*(.+)$/m)
+    const lastActivityMatch =
+      normalized.match(/^Last activity:\s*(.+)$/m) ??
+      normalized.match(/^-\s*\*\*Last activity:\*\*\s*(.+)$/m) ??
+      normalized.match(/^\*\*Последнее обновление:\*\*\s*(.+)$/m)
     const lastActivity = (lastActivityMatch?.[1] ?? "").trim()
 
     // Progress bar: "Progress: v1.8 [##########..........] 50%"
-    const progressMatch = raw.match(
+    const progressWithMilestoneMatch = normalized.match(
       /Progress:\s*(v[\d.]+)\s*\[.*?\]\s*(\d+)%/
     )
-    const milestoneName = (progressMatch?.[1] ?? "").trim()
-    const progressPercent = progressMatch
-      ? parseInt(progressMatch[2] ?? "0", 10)
-      : 0
+    const progressOnlyMatch = normalized.match(
+      /-\s*\*\*Overall progress:\*\*.*?\((\d+)%\)\s*$/m
+    )
+
+    const milestoneFallback = normalized.match(/^-\s*\*\*Milestone:\*\*\s*(v[\d.]+)\s*$/mi)
+    const milestoneName = (progressWithMilestoneMatch?.[1] ?? milestoneFallback?.[1] ?? "").trim()
+    const progressPercent = progressWithMilestoneMatch
+      ? parseInt(progressWithMilestoneMatch[2] ?? "0", 10)
+      : progressOnlyMatch
+        ? parseInt(progressOnlyMatch[1] ?? "0", 10)
+        : 0
 
     // Velocity stats
-    const totalPlansMatch = raw.match(
-      /Total plans completed:\s*(\d+)/
-    )
-    const avgDurationMatch = raw.match(
+    const totalPlansMatch =
+      normalized.match(
+        /Total plans completed:\s*(\d+)/
+      ) ??
+      normalized.match(/^-\s*\*\*Completed plans:\*\*\s*(\d+)\s*$/m)
+    const avgDurationMatch = normalized.match(
       /Average duration:\s*(\d+)\s*min/
     )
-    const totalDurationMatch = raw.match(
+    const totalDurationMatch = normalized.match(
       /Total execution time:\s*(\d+)\s*min/
     )
 
@@ -77,7 +110,7 @@ export function parseState(raw: string): ProjectState | null {
     const tableRegex =
       /\|\s*([a-zA-Z0-9._-]+(?:\s+[a-zA-Z0-9._-]+)*)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*min\s*\|\s*(\d+)\s*min\s*\|/g
     let tableMatch: RegExpExecArray | null
-    while ((tableMatch = tableRegex.exec(raw)) !== null) {
+    while ((tableMatch = tableRegex.exec(normalized)) !== null) {
       const pName = (tableMatch[1] ?? "").trim()
       // Skip header rows
       if (pName === "Phase" || pName.startsWith("---")) continue
@@ -91,7 +124,7 @@ export function parseState(raw: string): ProjectState | null {
 
     // Decisions - extract bullet points under "### Decisions"
     const decisions: string[] = []
-    const decisionsSection = raw.match(
+    const decisionsSection = normalized.match(
       /### Decisions\n\n([\s\S]*?)(?=\n###|\n## |$)/
     )
     if (decisionsSection) {
@@ -106,8 +139,8 @@ export function parseState(raw: string): ProjectState | null {
 
     // Blockers - extract from "### Blockers/Concerns"
     const blockers: string[] = []
-    const blockersSection = raw.match(
-      /### Blockers\/Concerns\n\n([\s\S]*?)(?=\n###|\n## |$)/
+    const blockersSection = normalized.match(
+      /### Blockers\s*\/\s*Concerns\n\n([\s\S]*?)(?=\n###|\n## |$)/
     )
     if (blockersSection) {
       const content = (blockersSection[1] ?? "").trim()
@@ -126,10 +159,14 @@ export function parseState(raw: string): ProjectState | null {
     }
 
     // Session continuity
-    const lastSessionMatch = raw.match(/Last session:\s*(.+)$/m)
-    const stoppedAtMatch = raw.match(
-      /Stopped at:\s*([\s\S]*?)(?=\n\n|$)/
-    )
+    const lastSessionMatch =
+      normalized.match(/Last session:\s*(.+)$/m) ??
+      normalized.match(/^-\s*\*\*Last session:\*\*\s*(.+)$/m)
+    const stoppedAtMatch =
+      normalized.match(
+        /Stopped at:\s*([\s\S]*?)(?=\n\n|$)/
+      ) ??
+      normalized.match(/^-\s*\*\*Stopped at:\*\*\s*(.+)$/m)
 
     const sessionContinuity = {
       lastSession: (lastSessionMatch?.[1] ?? "").trim(),

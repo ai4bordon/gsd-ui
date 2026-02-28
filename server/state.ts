@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises"
 import { join, basename, relative, extname } from "node:path"
 import type {
   GsdState,
+  ProjectState,
   Phase,
   Plan,
   Milestone,
@@ -67,18 +68,20 @@ export async function buildInitialState(
   }
 
   // Parse roadmap and create milestones
+  const roadmapParsedBase = roadmapRaw ? parseRoadmap(roadmapRaw) : []
+  const roadmapParsed = await mergeMilestoneRoadmaps(planningPath, roadmapParsedBase)
   let roadmapMilestones: Milestone[] = []
-  if (roadmapRaw) {
-    const parsed = parseRoadmap(roadmapRaw)
-    roadmapMilestones = roadmapMilestonesToMilestones(parsed)
+  if (roadmapParsed.length > 0) {
+    roadmapMilestones = roadmapMilestonesToMilestones(roadmapParsed)
   }
 
   // Parse phases from filesystem
   const phasesDir = join(planningPath, "phases")
   state.phases = await parsePhases(phasesDir, planningPath)
+  enrichPhasesFromRoadmap(state.phases, roadmapParsed)
 
   // Parse research documents
-  state.research = await parseResearchDocs(planningPath)
+  state.research = await parseResearchDocs(planningPath, state.phases)
 
   // Parse todos
   state.todos = await parseTodos(planningPath)
@@ -88,6 +91,7 @@ export async function buildInitialState(
     roadmapMilestones,
     state.phases
   )
+  syncMilestonesFromRequirements(state)
 
   // Determine current milestone
   if (state.state?.milestoneName) {
@@ -106,7 +110,97 @@ export async function buildInitialState(
   // Build search index
   state.searchIndex = buildSearchIndex(state)
 
+  const roadmapPhaseCount = roadmapParsed.reduce(
+    (sum, milestone) => sum + (milestone.phases?.length ?? 0),
+    0
+  )
+  applyStateFallbacks(state, roadmapPhaseCount)
+
   return state
+}
+
+async function mergeMilestoneRoadmaps(
+  planningPath: string,
+  primary: ReturnType<typeof parseRoadmap>
+): Promise<ReturnType<typeof parseRoadmap>> {
+  const byVersion = new Map<string, ReturnType<typeof parseRoadmap>[number]>()
+
+  for (const milestone of primary) {
+    byVersion.set(milestone.version, milestone)
+  }
+
+  const milestonesDir = join(planningPath, "milestones")
+  if (!(await dirExists(milestonesDir))) {
+    return [...byVersion.values()]
+  }
+
+  let entries: Array<{ isDirectory(): boolean; name: string }> = []
+  try {
+    entries = (await readdir(milestonesDir, { withFileTypes: true })) as Array<{
+      isDirectory(): boolean
+      name: string
+    }>
+  } catch {
+    return [...byVersion.values()]
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const dirVersion = String(entry.name)
+    const milestoneDir = join(milestonesDir, dirVersion)
+    const roadmapPath = join(milestoneDir, "ROADMAP.md")
+    const statePath = join(milestoneDir, "STATE.md")
+
+    const roadmapRaw = await readFileSafe(roadmapPath)
+    if (!roadmapRaw) continue
+
+    const parsed = parseRoadmap(roadmapRaw)
+    if (parsed.length === 0) continue
+
+    const inferredStatus = inferMilestoneStatusFromState(await readFileSafe(statePath))
+
+    for (const milestone of parsed) {
+      const normalized: ReturnType<typeof parseRoadmap>[number] = {
+        ...milestone,
+        version: dirVersion,
+        name: /^milestone\s+v\d/i.test(milestone.name)
+          ? `Milestone ${dirVersion}`
+          : milestone.name,
+        status: inferredStatus ?? milestone.status,
+        category:
+          (inferredStatus ?? milestone.status) === "shipped"
+            ? "shipped"
+            : milestone.category,
+      }
+
+      if (!byVersion.has(normalized.version)) {
+        byVersion.set(normalized.version, normalized)
+      }
+    }
+  }
+
+  return [...byVersion.values()]
+}
+
+function inferMilestoneStatusFromState(
+  raw: string | null
+): Milestone["status"] | null {
+  if (!raw) return null
+
+  const normalized = raw.replace(/\r\n?/g, "\n")
+
+  if (
+    /(?:status|статус)\s*:\s*(?:phase\s+complete|milestone\s+complete|completed|завершен|завершено)/i.test(normalized) ||
+    /\b100%\b/.test(normalized)
+  ) {
+    return "shipped"
+  }
+
+  if (/(?:status|статус)\s*:\s*(?:in\s*progress|milestone\s+initialized|в\s*работе|инициализирован)/i.test(normalized)) {
+    return "in_progress"
+  }
+
+  return null
 }
 
 /**
@@ -119,7 +213,7 @@ export async function updateStateForFile(
   filePath: string,
   event: "add" | "change" | "unlink"
 ): Promise<void> {
-  const rel = relative(state.planningPath, filePath)
+  const rel = relative(state.planningPath, filePath).replace(/\\/g, "/")
   const fileName = basename(filePath)
 
   // Handle top-level files
@@ -139,6 +233,7 @@ export async function updateStateForFile(
     } else {
       const raw = await readFileSafe(filePath)
       state.state = raw ? parseState(raw) : null
+      applyStateFallbacks(state)
     }
     return
   }
@@ -164,18 +259,25 @@ export async function updateStateForFile(
 
   // Handle phase files
   if (rel.startsWith("phases/")) {
+    const previousPhases = state.phases
+
     // Re-parse all phases (simpler and safe for file adds/removes)
     const phasesDir = join(state.planningPath, "phases")
     state.phases = await parsePhases(phasesDir, state.planningPath)
+    copyPhaseMetadata(previousPhases, state.phases)
 
     // Re-assign to milestones
     state.milestones = assignPhasesToMilestones(
       state.milestones.map((m) => ({ ...m, phases: [] })),
       state.phases
     )
+    syncMilestonesFromRequirements(state)
 
     // Re-extract decisions
     state.decisions = extractAllDecisions(state.phases)
+
+    // Rebuild research index (phase research docs can change under phases/)
+    state.research = await parseResearchDocs(state.planningPath, state.phases)
 
     // Update current milestone
     if (state.state?.milestoneName) {
@@ -199,9 +301,227 @@ export async function updateStateForFile(
 
   // Handle research files
   if (rel.startsWith("research/")) {
-    state.research = await parseResearchDocs(state.planningPath)
+    state.research = await parseResearchDocs(state.planningPath, state.phases)
     state.searchIndex = buildSearchIndex(state)
     return
+  }
+}
+
+function phaseNumberKey(value: number | string): string {
+  return String(value)
+}
+
+function samePhaseNumber(a: number | string, b: number | string): boolean {
+  const numA = typeof a === "number" ? a : parseFloat(String(a))
+  const numB = typeof b === "number" ? b : parseFloat(String(b))
+  if (!Number.isNaN(numA) && !Number.isNaN(numB)) {
+    return numA === numB
+  }
+  return String(a) === String(b)
+}
+
+function enrichPhasesFromRoadmap(
+  phases: Phase[],
+  roadmapMilestones: ReturnType<typeof parseRoadmap>
+): void {
+  for (const milestone of roadmapMilestones) {
+    for (const phaseStub of milestone.phases) {
+      const target = phases.find((phase) =>
+        samePhaseNumber(phase.number, phaseStub.number)
+      )
+      if (!target) continue
+      if (!target.goal && phaseStub.goal) {
+        target.goal = phaseStub.goal
+      }
+      if (!target.slug && phaseStub.slug) {
+        target.slug = phaseStub.slug
+      }
+    }
+  }
+}
+
+function copyPhaseMetadata(previous: Phase[], next: Phase[]): void {
+  const previousByNumber = new Map<string, Phase>()
+  for (const phase of previous) {
+    previousByNumber.set(phaseNumberKey(phase.number), phase)
+  }
+
+  for (const phase of next) {
+    const old = previousByNumber.get(phaseNumberKey(phase.number))
+    if (!old) continue
+    if (!phase.goal && old.goal) {
+      phase.goal = old.goal
+    }
+    if (!phase.slug && old.slug) {
+      phase.slug = old.slug
+    }
+  }
+}
+
+function parseDurationMinutes(value: string | undefined): number | null {
+  if (!value) return null
+  const normalized = value.trim().toLowerCase()
+  if (!normalized || normalized === "pending") return null
+
+  const hmsMatch = normalized.match(/^(\d+):(\d{2}):(\d{2})$/)
+  if (hmsMatch) {
+    const hours = parseInt(hmsMatch[1] ?? "0", 10)
+    const minutes = parseInt(hmsMatch[2] ?? "0", 10)
+    const seconds = parseInt(hmsMatch[3] ?? "0", 10)
+    return hours * 60 + minutes + seconds / 60
+  }
+
+  const mmssMatch = normalized.match(/^(\d+):(\d{2})$/)
+  if (mmssMatch) {
+    const minutes = parseInt(mmssMatch[1] ?? "0", 10)
+    const seconds = parseInt(mmssMatch[2] ?? "0", 10)
+    return minutes + seconds / 60
+  }
+
+  let minutes = 0
+  let matched = false
+
+  const hourMatch = normalized.match(/(\d+(?:[.,]\d+)?)\s*(?:h|hr|hrs|hour|hours|ч)/)
+  if (hourMatch?.[1]) {
+    minutes += parseFloat(hourMatch[1].replace(",", ".")) * 60
+    matched = true
+  }
+
+  const minuteMatch = normalized.match(/(\d+(?:[.,]\d+)?)\s*(?:m|min|mins|minute|minutes|м|мин)/)
+  if (minuteMatch?.[1]) {
+    minutes += parseFloat(minuteMatch[1].replace(",", "."))
+    matched = true
+  }
+
+  const secondMatch = normalized.match(/(\d+(?:[.,]\d+)?)\s*(?:s|sec|secs|second|seconds|с|сек)/)
+  if (secondMatch?.[1]) {
+    minutes += parseFloat(secondMatch[1].replace(",", ".")) / 60
+    matched = true
+  }
+
+  if (matched) {
+    return minutes
+  }
+
+  const numericOnly = normalized.match(/^(\d+(?:[.,]\d+)?)$/)
+  if (numericOnly?.[1]) {
+    return parseFloat(numericOnly[1].replace(",", "."))
+  }
+
+  return null
+}
+
+function computeVelocityFromPhases(phases: Phase[]): {
+  totalPlans: number
+  avgDuration: number
+  totalDuration: number
+  phaseMetrics: ProjectState["phaseMetrics"]
+} {
+  let completedPlans = 0
+  let plansWithDuration = 0
+  let totalDuration = 0
+
+  const phaseMetrics: ProjectState["phaseMetrics"] = []
+
+  for (const phase of phases) {
+    const completed = phase.plans.filter((plan) => !!plan.summary)
+    completedPlans += completed.length
+
+    let phaseDuration = 0
+    let phasePlansWithDuration = 0
+
+    for (const plan of completed) {
+      const minutes = parseDurationMinutes(plan.summary?.duration)
+      if (minutes == null || Number.isNaN(minutes) || minutes <= 0) continue
+      phaseDuration += minutes
+      phasePlansWithDuration += 1
+    }
+
+    plansWithDuration += phasePlansWithDuration
+    totalDuration += phaseDuration
+
+    if (completed.length > 0) {
+      phaseMetrics.push({
+        phase: `P${phase.number}`,
+        plans: completed.length,
+        totalMinutes: Math.round(phaseDuration),
+        avgPerPlan:
+          phasePlansWithDuration > 0
+            ? Math.round(phaseDuration / phasePlansWithDuration)
+            : 0,
+      })
+    }
+  }
+
+  return {
+    totalPlans: completedPlans,
+    avgDuration:
+      plansWithDuration > 0
+        ? totalDuration / plansWithDuration
+        : 0,
+    totalDuration,
+    phaseMetrics,
+  }
+}
+
+function applyStateFallbacks(state: GsdState, roadmapPhaseCount = 0): void {
+  if (!state.state) return
+
+  const derived = computeVelocityFromPhases(state.phases)
+
+  if (
+    (!state.state.velocity ||
+      (state.state.velocity.totalPlans === 0 &&
+        state.state.velocity.avgDuration === 0 &&
+        state.state.velocity.totalDuration === 0)) &&
+    (derived.totalPlans > 0 || derived.totalDuration > 0)
+  ) {
+    state.state.velocity = {
+      totalPlans: derived.totalPlans,
+      avgDuration: Math.round(derived.avgDuration),
+      totalDuration: Math.round(derived.totalDuration),
+    }
+  }
+
+  if (
+    (!state.state.phaseMetrics || state.state.phaseMetrics.length === 0) &&
+    derived.phaseMetrics.length > 0
+  ) {
+    state.state.phaseMetrics = derived.phaseMetrics
+  }
+
+  if (state.state.totalPhases === 0) {
+    const phasesFromMilestones = state.milestones.reduce(
+      (sum, milestone) => sum + (milestone.phases?.length ?? 0),
+      0
+    )
+    const fallbackTotal = roadmapPhaseCount || phasesFromMilestones || state.phases.length
+    if (fallbackTotal > 0) {
+      state.state.totalPhases = fallbackTotal
+    }
+  }
+
+  if (state.state.currentPhase === 0 && state.phases.length > 0) {
+    const numericPhases = state.phases
+      .map((phase) => {
+        const n = parseFloat(String(phase.number))
+        return Number.isNaN(n) ? null : n
+      })
+      .filter((n): n is number => n != null)
+    if (numericPhases.length > 0) {
+      state.state.currentPhase = Math.max(...numericPhases)
+    }
+  }
+
+  if (
+    state.state.progressPercent === 0 &&
+    state.state.currentPhase > 0 &&
+    state.state.totalPhases > 0
+  ) {
+    const calculated = Math.round(
+      (state.state.currentPhase / state.state.totalPhases) * 100
+    )
+    state.state.progressPercent = Math.max(0, Math.min(100, calculated))
   }
 }
 
@@ -447,12 +767,171 @@ function assignPhasesToMilestones(
   return milestones
 }
 
+function syncMilestonesFromRequirements(state: GsdState): void {
+  const existing = new Set(state.milestones.map((m) => m.version.toLowerCase()))
+  const currentMilestone = state.state?.milestoneName ?? ""
+
+  const reqByMilestone = new Map<string, { total: number; complete: number; pending: number }>()
+  for (const req of state.requirements) {
+    const milestone = req.milestone?.trim()
+    if (!milestone) continue
+    if (!isMilestoneLike(milestone)) continue
+
+    const bucket = reqByMilestone.get(milestone) ?? {
+      total: 0,
+      complete: 0,
+      pending: 0,
+    }
+    bucket.total += 1
+    if (req.status === "complete") {
+      bucket.complete += 1
+    } else {
+      bucket.pending += 1
+    }
+    reqByMilestone.set(milestone, bucket)
+  }
+
+  for (const [milestone, stats] of reqByMilestone.entries()) {
+    if (existing.has(milestone.toLowerCase())) continue
+
+    const inferredStatus: Milestone["status"] =
+      stats.pending === 0
+        ? "shipped"
+        : stats.complete > 0
+          ? "in_progress"
+          : "planned"
+
+    const isFuture = isFutureMilestone(milestone, currentMilestone)
+    const inferredCategory: Milestone["category"] =
+      inferredStatus === "shipped"
+        ? "shipped"
+        : isFuture
+          ? "post_launch"
+          : "go_live_gate"
+
+    const virtualPhases = buildVirtualPhasesFromRequirements(
+      state,
+      milestone
+    )
+
+    state.milestones.push({
+      version: milestone,
+      name: `Milestone ${milestone}`,
+      phaseRange: "",
+      status: inferredStatus,
+      category: inferredCategory,
+      phases: virtualPhases,
+      stats: `Requirements: ${stats.complete}/${stats.total} complete`,
+    })
+  }
+
+  state.milestones.sort((a, b) => compareMilestoneVersions(a.version, b.version))
+}
+
+function buildVirtualPhasesFromRequirements(
+  state: GsdState,
+  milestone: string
+): Phase[] {
+  const grouped = new Map<string, typeof state.requirements>()
+
+  for (const req of state.requirements) {
+    if ((req.milestone ?? "").trim() !== milestone) continue
+    const section = req.section?.trim() || "Uncategorized"
+    const bucket = grouped.get(section) ?? []
+    bucket.push(req)
+    grouped.set(section, bucket)
+  }
+
+  const phases: Phase[] = []
+  let index = 1
+  for (const [section, reqs] of grouped.entries()) {
+    const complete = reqs.filter((r) => r.status === "complete").length
+    const total = reqs.length
+
+    const status: Phase["status"] =
+      complete === total
+        ? "summarized"
+        : complete > 0
+          ? "executing"
+          : "planned"
+
+    const slug = section
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+
+    phases.push({
+      number: `R${index}`,
+      slug,
+      dirName: "",
+      dirPath: "",
+      goal: `${section} (${complete}/${total} complete)`,
+      milestone,
+      status,
+      plans: [],
+    })
+
+    index += 1
+  }
+
+  return phases
+}
+
+function isMilestoneLike(value: string): boolean {
+  return /^v\d+(?:\.\d+)*$/i.test(value) || value.toLowerCase() === "future"
+}
+
+function isFutureMilestone(candidate: string, current: string): boolean {
+  if (candidate.toLowerCase() === "future") return true
+  if (!/^v\d+(?:\.\d+)*$/i.test(candidate)) return false
+
+  const currentParts = parseVersionParts(current)
+  const candidateParts = parseVersionParts(candidate)
+  if (!currentParts || !candidateParts) {
+    return true
+  }
+  return compareVersionParts(candidateParts, currentParts) > 0
+}
+
+function parseVersionParts(value: string): number[] | null {
+  const match = value.match(/^v(\d+(?:\.\d+)*)$/i)
+  if (!match) return null
+  return (match[1] ?? "")
+    .split(".")
+    .map((part) => Number.parseInt(part, 10))
+    .filter((n) => Number.isFinite(n))
+}
+
+function compareVersionParts(a: number[], b: number[]): number {
+  const maxLen = Math.max(a.length, b.length)
+  for (let i = 0; i < maxLen; i += 1) {
+    const av = a[i] ?? 0
+    const bv = b[i] ?? 0
+    if (av !== bv) return av - bv
+  }
+  return 0
+}
+
+function compareMilestoneVersions(a: string, b: string): number {
+  const aParts = parseVersionParts(a)
+  const bParts = parseVersionParts(b)
+
+  if (aParts && bParts) {
+    return compareVersionParts(aParts, bParts)
+  }
+
+  if (aParts) return -1
+  if (bParts) return 1
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
+}
+
 /**
  * Cross-reference requirements to plans by matching plan frontmatter requirements field.
  */
 function crossReferenceRequirements(state: GsdState): void {
   for (const req of state.requirements) {
-    req.fulfilledByPlans = []
+    const existing = req.fulfilledByPlans ?? []
+    req.fulfilledByPlans = [...new Set(existing.filter(Boolean))]
   }
 
   for (const phase of state.phases) {
@@ -461,9 +940,11 @@ function crossReferenceRequirements(state: GsdState): void {
       for (const reqId of plan.requirements) {
         const req = state.requirements.find((r) => r.id === reqId)
         if (req) {
-          const planRef = `${plan.phase}/${plan.fileName}`
+          const planRef = `${phase.number}/${plan.planNumber}`
           if (!req.fulfilledByPlans) req.fulfilledByPlans = []
-          req.fulfilledByPlans.push(planRef)
+          if (!req.fulfilledByPlans.includes(planRef)) {
+            req.fulfilledByPlans.push(planRef)
+          }
         }
       }
     }
@@ -498,7 +979,8 @@ function extractAllDecisions(phases: Phase[]): Decision[] {
  * Parse all research documents from the research/ directory and phase research files.
  */
 async function parseResearchDocs(
-  planningPath: string
+  planningPath: string,
+  phases: Phase[] = []
 ): Promise<ResearchDocument[]> {
   const docs: ResearchDocument[] = []
 
@@ -527,6 +1009,26 @@ async function parseResearchDocs(
       // research directory may not exist
     }
   }
+
+  // Phase research docs parsed from phase directories
+  for (const phase of phases) {
+    const md = phase.research
+    if (!md) continue
+    const titleHeading = md.headings.find((h) => h.level === 1)
+    docs.push({
+      fileName: md.fileName,
+      filePath: md.filePath,
+      title:
+        titleHeading?.text ??
+        `Phase ${phase.number} Research`,
+      type: "phase",
+      phase: String(phase.number),
+      body: md.body,
+      headings: md.headings.map((h) => h.text),
+    })
+  }
+
+  docs.sort((a, b) => a.filePath.localeCompare(b.filePath))
 
   return docs
 }

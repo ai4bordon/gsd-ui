@@ -28,6 +28,7 @@ export function parseTodo(
   isDone: boolean
 ): Todo {
   const { data, content } = parseFrontmatter(raw)
+  const normalizedContent = content.replace(/\r\n?/g, "\n")
 
   const title = String(data.title ?? "")
   const area = String(data.area ?? "")
@@ -45,13 +46,13 @@ export function parseTodo(
   const slug = slugMatch?.[1] ?? fileName.replace(/\.md$/, "")
 
   // Extract Problem section
-  const problemMatch = content.match(
+  const problemMatch = normalizedContent.match(
     /## Problem\n\n([\s\S]*?)(?=\n## |$)/
   )
   const problem = problemMatch?.[1]?.trim() ?? ""
 
   // Extract Solution section
-  const solutionMatch = content.match(
+  const solutionMatch = normalizedContent.match(
     /## Solution\n\n([\s\S]*?)(?=\n## |$)/
   )
   const solution = solutionMatch?.[1]?.trim() ?? ""
@@ -66,7 +67,7 @@ export function parseTodo(
     status: isDone ? "done" : "pending",
     problem,
     solution,
-    body: content,
+    body: normalizedContent,
   }
 }
 

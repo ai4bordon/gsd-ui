@@ -7,7 +7,7 @@ import { parseFrontmatter } from "./frontmatter.ts"
 export function parseSummary(raw: string, fileName: string): PlanSummary {
   const { data, content } = parseFrontmatter(raw)
 
-  const body = content
+  const body = content.replace(/\r\n?/g, "\n")
 
   // Extract inline metadata
   const phase =
@@ -26,15 +26,24 @@ export function parseSummary(raw: string, fileName: string): PlanSummary {
   const oneLinerMatch = body.match(/\*\*One-liner:\*\*\s*(.+)/)
   const oneLiner = (oneLinerMatch?.[1] ?? "").trim()
 
-  // Duration and completed from ## Metrics section or inline
-  const durationMatch = body.match(/duration:\s*(.+?)$/m)
-  const duration = (durationMatch?.[1] ?? "").trim()
+  // Duration/completed/started from frontmatter first, then body fallbacks
+  const duration =
+    asScalarString(data.duration) ||
+    extractInline(body, "duration") ||
+    extractBoldMetric(body, ["Duration", "Длительность"]) ||
+    ""
 
-  const completedMatch = body.match(/completed:\s*(.+?)$/m)
-  const completed = (completedMatch?.[1] ?? "").trim()
+  const completed =
+    asScalarString(data.completed) ||
+    extractInline(body, "completed") ||
+    extractBoldMetric(body, ["Completed", "Завершено"]) ||
+    ""
 
-  const startedMatch = body.match(/started:\s*(.+?)$/m)
-  const started = (startedMatch?.[1] ?? "").trim()
+  const started =
+    asScalarString(data.started) ||
+    extractInline(body, "started") ||
+    extractBoldMetric(body, ["Started", "Старт"]) ||
+    ""
 
   const statusMatch = body.match(/status:\s*(.+?)$/m)
   const status = (statusMatch?.[1] ?? "complete").trim()
@@ -83,6 +92,27 @@ function asStringArray(val: unknown): string[] {
   return []
 }
 
+function asScalarString(val: unknown): string {
+  if (typeof val === "string") return val.trim()
+  if (typeof val === "number") return String(val)
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    return val.toISOString().slice(0, 10)
+  }
+  return ""
+}
+
+function extractBoldMetric(body: string, labels: string[]): string | null {
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const regex = new RegExp(`^\\s*[-*]?\\s*\\*\\*${escaped}:\\*\\*\\s*(.+)$`, "im")
+    const match = body.match(regex)
+    if (match?.[1]) {
+      return match[1].trim()
+    }
+  }
+  return null
+}
+
 function extractFileList(body: string, heading: string): string[] {
   const regex = new RegExp(
     `### ${heading}\\n([\\s\\S]*?)(?=\\n### |\\n## |$)`
@@ -108,7 +138,7 @@ function extractDecisionsTable(
   const decisions: Array<{ decision: string; rationale: string }> = []
 
   const sectionMatch = body.match(
-    /## Decisions(?:\s+Made)?\n([\s\S]*?)(?=\n## |$)/
+    /##\s*(?:Decisions(?:\s+Made)?|Решения)\n([\s\S]*?)(?=\n## |$)/i
   )
   if (!sectionMatch) return decisions
 
@@ -134,6 +164,37 @@ function extractDecisionsTable(
       decision: col1,
       rationale: col2,
     })
+  }
+
+  if (decisions.length > 0) {
+    return decisions
+  }
+
+  // Fallback: bullet/numbered decisions without a markdown table
+  const lines = sectionContent.split("\n")
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line || /^none\.?$/i.test(line) || /^нет\.?$/i.test(line)) {
+      continue
+    }
+    const listMatch = line.match(/^(?:[-*]|\d+\.)\s+(.+)$/)
+    if (!listMatch) continue
+
+    const text = (listMatch[1] ?? "").trim()
+    if (!text) continue
+
+    const splitMatch = text.match(/^(.+?)\s+[—–-]\s+(.+)$/)
+    if (splitMatch) {
+      decisions.push({
+        decision: (splitMatch[1] ?? "").trim(),
+        rationale: (splitMatch[2] ?? "").trim(),
+      })
+    } else {
+      decisions.push({
+        decision: text,
+        rationale: "",
+      })
+    }
   }
 
   return decisions

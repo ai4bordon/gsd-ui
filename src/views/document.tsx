@@ -27,6 +27,11 @@ export function DocumentView() {
     (d) => d.filePath === path || d.fileName === path
   )
 
+  const normalizedPath = path.replace(/\\/g, '/')
+  const guessResearchOrigin =
+    normalizedPath.includes('/research/') ||
+    /\/phases\/.+-RESEARCH\.md$/i.test(normalizedPath)
+
   if (!doc) {
     return (
       <div className="py-20 text-center">
@@ -35,19 +40,30 @@ export function DocumentView() {
         <p className="text-sm text-muted-foreground mt-2">
           Could not find document at "{path}"
         </p>
-        <Link to="/" className="mt-4 inline-block text-sm text-blue-400 hover:text-blue-300">
-          Back to Roadmap
+        <Link
+          to={guessResearchOrigin ? '/research' : '/roadmap'}
+          className="mt-4 inline-block text-sm text-blue-400 hover:text-blue-300"
+        >
+          {guessResearchOrigin ? 'Back to Research' : 'Back to Roadmap'}
         </Link>
       </div>
     )
   }
 
+  const fromResearch =
+    doc.type === 'phase' ||
+    doc.type === 'standalone' ||
+    doc.filePath.replace(/\\/g, '/').includes('/research/')
+
   return (
     <div className="space-y-6">
       <Breadcrumb
         items={[
-          { label: 'Roadmap', href: '/' },
-          ...(doc.phase
+          {
+            label: fromResearch ? 'Research' : 'Roadmap',
+            href: fromResearch ? '/research' : '/roadmap',
+          },
+          ...(doc.type === 'phase' && doc.phase
             ? [{ label: `Phase ${doc.phase}`, href: `/phase/${doc.phase}` }]
             : []),
           { label: doc.title || doc.fileName },

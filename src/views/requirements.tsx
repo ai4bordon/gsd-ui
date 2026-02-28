@@ -9,6 +9,26 @@ import { StatusBadge } from '@/components/status-badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { Requirement } from '../../server/types'
 
+function parsePlanRef(ref: string): { phase: string; plan: string } | null {
+  const direct = ref.match(/^([^/]+)\/(\d+)$/)
+  if (direct) {
+    return {
+      phase: direct[1] ?? '',
+      plan: direct[2] ?? '',
+    }
+  }
+
+  const legacyFileRef = ref.match(/^([^/]+)\/(\d+)-(\d+)-PLAN\.md$/i)
+  if (legacyFileRef) {
+    return {
+      phase: legacyFileRef[2] ?? '',
+      plan: legacyFileRef[3] ?? '',
+    }
+  }
+
+  return null
+}
+
 export function RequirementsView() {
   const { state, loading } = useLiveState()
   const [filter, setFilter] = useState('')
@@ -128,13 +148,21 @@ export function RequirementsView() {
                               {req.fulfilledByPlans && req.fulfilledByPlans.length > 0 ? (
                                 <div className="flex flex-wrap gap-1">
                                   {req.fulfilledByPlans.map((planRef) => {
-                                    const [phase, plan] = planRef.split('.')
+                                    const route = parsePlanRef(planRef)
+                                    if (route) {
+                                      return (
+                                        <Link key={planRef} to={`/plan/${route.phase}/${route.plan}`}>
+                                          <Badge variant="outline" className="text-xs hover:bg-accent cursor-pointer">
+                                            {planRef}
+                                          </Badge>
+                                        </Link>
+                                      )
+                                    }
+
                                     return (
-                                      <Link key={planRef} to={`/plan/${phase}/${plan}`}>
-                                        <Badge variant="outline" className="text-xs hover:bg-accent cursor-pointer">
-                                          {planRef}
-                                        </Badge>
-                                      </Link>
+                                      <Badge key={planRef} variant="outline" className="text-xs">
+                                        {planRef}
+                                      </Badge>
                                     )
                                   })}
                                 </div>

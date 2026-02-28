@@ -22,6 +22,7 @@ interface RoadmapMilestone {
  * Parse ROADMAP.md to extract milestones and their phase stubs.
  */
 export function parseRoadmap(raw: string): RoadmapMilestone[] {
+  const normalized = raw.replace(/\r\n?/g, "\n")
   const milestones: RoadmapMilestone[] = []
 
   // Parse milestone list entries under ### Shipped, ### Go-Live Gate, ### Post-Launch
@@ -30,7 +31,7 @@ export function parseRoadmap(raw: string): RoadmapMilestone[] {
     content: string
   }> = []
 
-  const shippedMatch = raw.match(/### Shipped\n([\s\S]*?)(?=\n### |$)/)
+  const shippedMatch = normalized.match(/### Shipped\n([\s\S]*?)(?=\n### |$)/)
   if (shippedMatch) {
     milestoneSections.push({
       category: "shipped",
@@ -38,7 +39,7 @@ export function parseRoadmap(raw: string): RoadmapMilestone[] {
     })
   }
 
-  const goLiveMatch = raw.match(
+  const goLiveMatch = normalized.match(
     /### Go-Live Gate\n([\s\S]*?)(?=\n### (?!Phase)|$)/
   )
   if (goLiveMatch) {
@@ -48,7 +49,7 @@ export function parseRoadmap(raw: string): RoadmapMilestone[] {
     })
   }
 
-  const postLaunchMatch = raw.match(
+  const postLaunchMatch = normalized.match(
     /### Post-Launch\n([\s\S]*?)(?=\n## |$)/
   )
   if (postLaunchMatch) {
@@ -95,7 +96,7 @@ export function parseRoadmap(raw: string): RoadmapMilestone[] {
   const detailsRegex =
     /<details>\s*<summary>([^<]+)<\/summary>([\s\S]*?)<\/details>/g
   let detailsMatch: RegExpExecArray | null
-  while ((detailsMatch = detailsRegex.exec(raw)) !== null) {
+  while ((detailsMatch = detailsRegex.exec(normalized)) !== null) {
     const summaryText = (detailsMatch[1] ?? "").trim()
     const detailsBody = detailsMatch[2] ?? ""
 
@@ -117,7 +118,7 @@ export function parseRoadmap(raw: string): RoadmapMilestone[] {
       const phaseNameRaw = (phaseMatch[2] ?? "").trim()
       const phaseBody = phaseMatch[3] ?? ""
 
-      const goalMatch = phaseBody.match(/\*\*Goal\*\*:\s*(.+)/)
+      const goalMatch = phaseBody.match(/\*\*(?:Goal|Цель)(?::)?\*\*:?[ \t]*(.+)/i)
       const goal = (goalMatch?.[1] ?? "").trim()
 
       // Count plans
@@ -157,18 +158,18 @@ export function parseRoadmap(raw: string): RoadmapMilestone[] {
   const nonDetailsPhases =
     /### Phase ([\d.]+):?\s*([^\n]+)\n([\s\S]*?)(?=\n### Phase |\n### v|\n## |$)/g
   let ndMatch: RegExpExecArray | null
-  while ((ndMatch = nonDetailsPhases.exec(raw)) !== null) {
+  while ((ndMatch = nonDetailsPhases.exec(normalized)) !== null) {
     const phaseNum = (ndMatch[1] ?? "").trim()
     const phaseNameRaw = (ndMatch[2] ?? "").trim()
     const phaseBody = ndMatch[3] ?? ""
 
     // Check this isn't inside a <details> block
-    const beforeText = raw.substring(0, ndMatch.index)
+    const beforeText = normalized.substring(0, ndMatch.index)
     const lastDetailsOpen = beforeText.lastIndexOf("<details>")
     const lastDetailsClose = beforeText.lastIndexOf("</details>")
     if (lastDetailsOpen > lastDetailsClose) continue
 
-    const goalMatch = phaseBody.match(/\*\*Goal\*\*:\s*(.+)/)
+    const goalMatch = phaseBody.match(/\*\*(?:Goal|Цель)(?::)?\*\*:?[ \t]*(.+)/i)
     const goal = (goalMatch?.[1] ?? "").trim()
 
     const planLines = phaseBody.match(
@@ -216,7 +217,83 @@ export function parseRoadmap(raw: string): RoadmapMilestone[] {
     }
   }
 
-  return milestones
+  if (milestones.length > 0) {
+    return milestones
+  }
+
+  // Fallback format: single-milestone roadmap with phase blocks
+  // (supports both English and Russian headings).
+  const headingLine = (normalized.match(/^#\s*(.+)$/m)?.[1] ?? "").trim()
+  const versionMatch = headingLine.match(/\b(v\d+(?:\.\d+)*)\b/i)
+  const fallbackVersion = (versionMatch?.[1] ?? "v1").trim()
+  const fallbackName = headingLine
+    .replace(/^(?:ROADMAP|Дорожная карта)\s*:?[\s-]*/i, "")
+    .replace(/\(\s*v\d+(?:\.\d+)*\s*\)/i, "")
+    .replace(/\b(v\d+(?:\.\d+)*)\b/i, "")
+    .trim() || `Milestone ${fallbackVersion}`
+
+  const fallbackPhases: RoadmapPhaseStub[] = []
+  const phaseBlockRegex =
+    /(?:^|\n)#{2,3}\s*(?:Phase|Фаза)\s+([\d.]+)\s*[-:]\s*([^\n]+)\n([\s\S]*?)(?=\n#{2,3}\s*(?:Phase|Фаза)\s+[\d.]+\s*[-:]|\n##\s+(?:Progress|Coverage|Прогресс)\b|\n##\s+|$)/gi
+  let phaseBlockMatch: RegExpExecArray | null
+  while ((phaseBlockMatch = phaseBlockRegex.exec(normalized)) !== null) {
+    const phaseNum = (phaseBlockMatch[1] ?? "").trim()
+    const phaseNameRaw = (phaseBlockMatch[2] ?? "").trim()
+    const phaseBody = phaseBlockMatch[3] ?? ""
+
+    const goalMatch = phaseBody.match(/\*\*(?:Goal|Цель)(?::)?\*\*:?[ \t]*(.+)/i)
+    const goal = (goalMatch?.[1] ?? "").trim()
+
+    const planLineRegex = /-\s*\[[ x]\]\s*([\d.]+-\d+-PLAN\.md)\s*(?:[-–—]|--)?\s*(.+)?$/gm
+    const plainPlanLineRegex = /-\s*([\d.]+-\d+-PLAN\.md)\s*(?:[-–—]|--)?\s*(.+)?$/gm
+
+    const planNames: string[] = []
+    let planLineMatch: RegExpExecArray | null
+    while ((planLineMatch = planLineRegex.exec(phaseBody)) !== null) {
+      const desc = (planLineMatch[2] ?? planLineMatch[1] ?? "").trim()
+      planNames.push(desc)
+    }
+    if (planNames.length === 0) {
+      while ((planLineMatch = plainPlanLineRegex.exec(phaseBody)) !== null) {
+        const desc = (planLineMatch[2] ?? planLineMatch[1] ?? "").trim()
+        planNames.push(desc)
+      }
+    }
+
+    const slug = phaseNameRaw
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+
+    fallbackPhases.push({
+      number: phaseNum.includes(".") ? phaseNum : parseInt(phaseNum, 10),
+      slug,
+      goal,
+      planCount: planNames.length,
+      planNames,
+    })
+  }
+
+  if (fallbackPhases.length === 0) {
+    return milestones
+  }
+
+  const numericPhaseNumbers = fallbackPhases
+    .map((p) => parseFloat(String(p.number)))
+    .filter((n) => !Number.isNaN(n))
+  const minPhase = numericPhaseNumbers.length > 0 ? Math.floor(Math.min(...numericPhaseNumbers)) : 1
+  const maxPhase = numericPhaseNumbers.length > 0 ? Math.ceil(Math.max(...numericPhaseNumbers)) : 999
+
+  return [
+    {
+      version: fallbackVersion,
+      name: fallbackName,
+      phaseRange: `${minPhase}-${maxPhase}`,
+      status: "in_progress",
+      category: "go_live_gate",
+      phases: fallbackPhases,
+    },
+  ]
 }
 
 /**

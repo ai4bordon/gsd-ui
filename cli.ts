@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { resolve, join } from "node:path"
+import { resolve, join, relative } from "node:path"
 import { readdir, stat } from "node:fs/promises"
 import { createInterface } from "node:readline"
 import { startServer } from "./server/index.ts"
@@ -184,10 +184,8 @@ async function promptSelection(dirs: string[]): Promise<string> {
   console.log("\nMultiple .planning/ directories found:\n")
   for (let i = 0; i < dirs.length; i++) {
     // Show path relative to cwd for readability
-    const relative = dirs[i].startsWith(cwd + "/")
-      ? dirs[i].slice(cwd.length + 1)
-      : dirs[i]
-    console.log(`  ${i + 1}) ${relative}`)
+    const relativePath = relative(cwd, dirs[i])
+    console.log(`  ${i + 1}) ${relativePath.startsWith("..") ? dirs[i] : relativePath}`)
   }
   console.log()
 

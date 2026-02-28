@@ -1,4 +1,4 @@
-import { resolve, join } from "node:path"
+import { resolve, join, relative, isAbsolute } from "node:path"
 import { connect } from "node:net"
 import type { ServerWebSocket } from "bun"
 import type { GsdState } from "./types.ts"
@@ -163,7 +163,8 @@ export async function startServer(planningPath: string, port: number, portExplic
 
     // Resolve and ensure path stays within distDir (prevent path traversal)
     let fullPath = resolve(distDir, "." + filePath)
-    if (!fullPath.startsWith(distDir + "/") && fullPath !== distDir) {
+    const rel = relative(distDir, fullPath)
+    if (rel.startsWith("..") || isAbsolute(rel)) {
       return new Response("Forbidden", { status: 403 })
     }
 

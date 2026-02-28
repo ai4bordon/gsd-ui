@@ -24,6 +24,57 @@ interface PhaseMetric {
   avgPerPlan: number
 }
 
+function parseDurationMinutes(value: string | undefined): number | null {
+  if (!value) return null
+  const normalized = value.trim().toLowerCase()
+  if (!normalized || normalized === 'pending') return null
+
+  const hmsMatch = normalized.match(/^(\d+):(\d{2}):(\d{2})$/)
+  if (hmsMatch) {
+    const hours = parseInt(hmsMatch[1] ?? '0', 10)
+    const minutes = parseInt(hmsMatch[2] ?? '0', 10)
+    const seconds = parseInt(hmsMatch[3] ?? '0', 10)
+    return hours * 60 + minutes + seconds / 60
+  }
+
+  const mmssMatch = normalized.match(/^(\d+):(\d{2})$/)
+  if (mmssMatch) {
+    const minutes = parseInt(mmssMatch[1] ?? '0', 10)
+    const seconds = parseInt(mmssMatch[2] ?? '0', 10)
+    return minutes + seconds / 60
+  }
+
+  let minutes = 0
+  let matched = false
+
+  const hourMatch = normalized.match(/(\d+(?:[.,]\d+)?)\s*(?:h|hr|hrs|hour|hours|ч)/)
+  if (hourMatch?.[1]) {
+    minutes += parseFloat(hourMatch[1].replace(',', '.')) * 60
+    matched = true
+  }
+
+  const minuteMatch = normalized.match(/(\d+(?:[.,]\d+)?)\s*(?:m|min|mins|minute|minutes|м|мин)/)
+  if (minuteMatch?.[1]) {
+    minutes += parseFloat(minuteMatch[1].replace(',', '.'))
+    matched = true
+  }
+
+  const secondMatch = normalized.match(/(\d+(?:[.,]\d+)?)\s*(?:s|sec|secs|second|seconds|с|сек)/)
+  if (secondMatch?.[1]) {
+    minutes += parseFloat(secondMatch[1].replace(',', '.')) / 60
+    matched = true
+  }
+
+  if (matched) return minutes
+
+  const numericOnly = normalized.match(/^(\d+(?:[.,]\d+)?)$/)
+  if (numericOnly?.[1]) {
+    return parseFloat(numericOnly[1].replace(',', '.'))
+  }
+
+  return null
+}
+
 function StatCard({
   label,
   value,
@@ -64,34 +115,54 @@ export function VelocityView() {
 
   // Build chart data from phaseMetrics
   const phaseChartData = useMemo(() => {
-    return phaseMetrics.map((pm: PhaseMetric) => ({
-      name: pm.phase,
-      totalMinutes: pm.totalMinutes,
-      avgPerPlan: pm.avgPerPlan,
-      plans: pm.plans,
-    }))
+    const seen = new Map<string, number>()
+    return phaseMetrics.map((pm: PhaseMetric) => {
+      const count = (seen.get(pm.phase) ?? 0) + 1
+      seen.set(pm.phase, count)
+      return {
+        name: count > 1 ? `${pm.phase}.${count}` : pm.phase,
+        totalMinutes: pm.totalMinutes,
+        avgPerPlan: pm.avgPerPlan,
+        plans: pm.plans,
+      }
+    })
   }, [phaseMetrics])
 
   // Build plan-level chart from phases > plans > summaries
   const planChartData = useMemo(() => {
     if (!state?.phases) return []
 
-    const data: Array<{ name: string; duration: number }> = []
+    const raw: Array<{
+      baseName: string
+      scopedName: string
+      duration: number
+    }> = []
     for (const phase of state.phases) {
+      const scope = (phase.slug || phase.dirName || '').replace(/^\d+(?:\.\d+)?-?/, '')
       for (const plan of phase.plans ?? []) {
         if (plan.summary?.duration) {
-          // Parse duration string like "42 minutes"
-          const match = plan.summary.duration?.match(/(\d+)/)
-          if (match?.[1]) {
-            data.push({
-              name: `P${phase.number}.${plan.planNumber}`,
-              duration: parseInt(match[1], 10),
+          const minutes = parseDurationMinutes(plan.summary.duration)
+          if (minutes != null && Number.isFinite(minutes) && minutes > 0) {
+            const baseName = `P${phase.number}.${plan.planNumber}`
+            raw.push({
+              baseName,
+              scopedName: scope ? `${baseName} (${scope})` : baseName,
+              duration: Math.round(minutes),
             })
           }
         }
       }
     }
-    return data
+
+    const counts = new Map<string, number>()
+    for (const item of raw) {
+      counts.set(item.baseName, (counts.get(item.baseName) ?? 0) + 1)
+    }
+
+    return raw.map((item) => ({
+      name: (counts.get(item.baseName) ?? 0) > 1 ? item.scopedName : item.baseName,
+      duration: item.duration,
+    }))
   }, [state?.phases])
 
   // Cumulative progress
@@ -100,14 +171,18 @@ export function VelocityView() {
 
     let total = 0
     const points: Array<{ phase: string; completed: number }> = []
+    const seen = new Map<string, number>()
 
     for (const phase of state.phases) {
       const completedPlans = phase.plans?.filter(
         (p) => p.status === 'complete' || (p.status as string) === 'summarized'
       ).length ?? 0
       total += completedPlans
+      const base = `P${phase.number}`
+      const count = (seen.get(base) ?? 0) + 1
+      seen.set(base, count)
       points.push({
-        phase: `P${phase.number}`,
+        phase: count > 1 ? `${base}.${count}` : base,
         completed: total,
       })
     }

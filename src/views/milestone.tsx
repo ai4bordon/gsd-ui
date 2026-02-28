@@ -16,54 +16,64 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Separator } from '@/components/ui/separator'
 import type { Phase, Milestone } from '../../server/types'
 
-function PhaseCard({ phase }: { phase: Phase }) {
+function PhaseCard({ phase, canNavigate }: { phase: Phase; canNavigate: boolean }) {
   const planCount = phase.plans?.length ?? 0
   const completedPlans = phase.plans?.filter(
     (p) => p.status === 'complete' || (p.status as string) === 'summarized'
   ).length ?? 0
   const progress = planCount > 0 ? Math.round((completedPlans / planCount) * 100) : 0
 
-  return (
-    <Link to={`/phase/${phase.number}`}>
-      <Card className="group cursor-pointer transition-colors hover:border-zinc-600">
-        <CardContent className="p-4">
-          <div className="flex items-start justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-mono text-muted-foreground bg-zinc-800 px-1.5 py-0.5 rounded">
-                P{phase.number}
-              </span>
-              <StatusBadge status={phase.status} />
-            </div>
+  const content = (
+    <Card className="group cursor-pointer transition-colors hover:border-zinc-600">
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-mono text-muted-foreground bg-zinc-800 px-1.5 py-0.5 rounded">
+              P{phase.number}
+            </span>
+            <StatusBadge status={phase.status} />
+          </div>
+          {canNavigate && (
             <ChevronRight
               size={16}
               className="text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity"
             />
-          </div>
-          <h3 className="text-sm font-semibold mb-1 truncate">
-            {phase.goal || phase.slug || `Phase ${phase.number}`}
-          </h3>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground mt-2">
-            <span className="flex items-center gap-1">
-              <Layers size={12} />
-              {planCount} plans
-            </span>
-            {phase.metrics && (
-              <span className="flex items-center gap-1">
-                <Clock size={12} />
-                {phase.metrics.totalMinutes}m total
-              </span>
-            )}
-          </div>
-          {planCount > 0 && (
-            <div className="mt-3 flex items-center gap-2">
-              <Progress value={progress} className="flex-1 h-1.5" />
-              <span className="text-xs font-mono text-muted-foreground">
-                {completedPlans}/{planCount}
-              </span>
-            </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+        <h3 className="text-sm font-semibold mb-1 truncate">
+          {phase.goal || phase.slug || `Phase ${phase.number}`}
+        </h3>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground mt-2">
+          <span className="flex items-center gap-1">
+            <Layers size={12} />
+            {planCount} plans
+          </span>
+          {phase.metrics && (
+            <span className="flex items-center gap-1">
+              <Clock size={12} />
+              {phase.metrics.totalMinutes}m total
+            </span>
+          )}
+        </div>
+        {planCount > 0 && (
+          <div className="mt-3 flex items-center gap-2">
+            <Progress value={progress} className="flex-1 h-1.5" />
+            <span className="text-xs font-mono text-muted-foreground">
+              {completedPlans}/{planCount}
+            </span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+
+  if (!canNavigate) {
+    return content
+  }
+
+  return (
+    <Link to={`/phase/${phase.number}`}>
+      {content}
     </Link>
   )
 }
@@ -87,6 +97,7 @@ export function MilestoneView() {
   const milestone = state.milestones?.find(
     (m) => m.version === version || m.version === decodeURIComponent(version ?? '')
   )
+  const realPhaseKeys = new Set((state.phases ?? []).map((p) => String(p.number)))
 
   if (!milestone) {
     return (
@@ -215,7 +226,11 @@ export function MilestoneView() {
         {milestone.phases && milestone.phases.length > 0 ? (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {milestone.phases.map((phase) => (
-              <PhaseCard key={phase.number} phase={phase} />
+              <PhaseCard
+                key={String(phase.number)}
+                phase={phase}
+                canNavigate={realPhaseKeys.has(String(phase.number))}
+              />
             ))}
           </div>
         ) : (

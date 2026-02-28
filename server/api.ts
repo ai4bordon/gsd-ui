@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises"
-import { join, resolve, relative } from "node:path"
+import { join, resolve, relative, isAbsolute } from "node:path"
 import type { GsdState, SearchEntry } from "./types.ts"
 
 /**
@@ -8,20 +8,21 @@ import type { GsdState, SearchEntry } from "./types.ts"
  */
 function sanitizeState(state: GsdState) {
   const planningBase = state.planningPath
+  const toClientPath = (value: string) => value.replace(/\\/g, "/")
 
   const relativize = (absPath: string): string => {
     if (!absPath) return absPath
     try {
-      return relative(resolve(planningBase, ".."), absPath)
+      return toClientPath(relative(resolve(planningBase, ".."), absPath))
     } catch {
-      return absPath
+      return toClientPath(absPath)
     }
   }
 
   return {
     ...state,
-    projectPath: undefined,
-    planningPath: undefined,
+    projectPath: toClientPath(resolve(state.projectPath)),
+    planningPath: toClientPath(resolve(state.planningPath)),
     phases: state.phases.map((phase) => ({
       ...phase,
       dirPath: relativize(phase.dirPath),
@@ -78,12 +79,13 @@ export function handleSearch(
   url: URL,
 ): Response {
   const planningBase = state.planningPath
+  const toClientPath = (value: string) => value.replace(/\\/g, "/")
   const relativize = (absPath: string): string => {
     if (!absPath) return absPath
     try {
-      return relative(resolve(planningBase, ".."), absPath)
+      return toClientPath(relative(resolve(planningBase, ".."), absPath))
     } catch {
-      return absPath
+      return toClientPath(absPath)
     }
   }
   const query = url.searchParams.get("q")?.toLowerCase().trim()
@@ -174,7 +176,8 @@ export async function handleGetDocument(
 
   // Security: ensure the resolved path is strictly within the planning directory
   const normalizedPlanning = resolve(state.planningPath)
-  if (!fullPath.startsWith(normalizedPlanning + "/") && fullPath !== normalizedPlanning) {
+  const rel = relative(normalizedPlanning, fullPath)
+  if (rel.startsWith("..") || isAbsolute(rel)) {
     return Response.json(
       { error: "Path is outside planning directory" },
       { status: 403 }

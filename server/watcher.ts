@@ -37,9 +37,9 @@ export function createWatcher(
   const watcher = watch(planningPath, {
     ignoreInitial: true,
     persistent: true,
-    // Ignore dotfiles, node_modules, etc.
+    // Ignore dependency directories. Do not ignore dot-paths globally,
+    // because the watched root itself is usually `.planning`.
     ignored: [
-      /(^|[\/\\])\../, // dotfiles
       /node_modules/,
     ],
     // Use polling as a fallback for network filesystems

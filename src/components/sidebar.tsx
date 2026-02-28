@@ -8,6 +8,7 @@ import {
   Search,
   Scale,
   Activity,
+  Folder,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react'
@@ -35,6 +36,7 @@ const navItems = [
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { state } = useLiveState()
   const projectName = state?.config?.mode ?? 'GSD Project'
+  const currentPath = state?.projectPath || state?.planningPath || ''
 
   return (
     <aside
@@ -91,6 +93,17 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               <div>Phase {state.state.currentPhase} / {state.state.totalPhases}</div>
               <div className="mt-1 truncate">{state.state.status}</div>
             </div>
+            {currentPath && (
+              <div className="mt-2 rounded-md border border-border/60 bg-accent/20 p-2">
+                <div className="mb-1 flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <Folder size={11} />
+                  <span>Project Path</span>
+                </div>
+                <div className="truncate font-mono text-[11px] text-muted-foreground" title={currentPath}>
+                  {currentPath}
+                </div>
+              </div>
+            )}
             {state?.config?.model_profile && (
               <div className="mt-2">
                 <Badge variant="secondary" className="text-xs">
