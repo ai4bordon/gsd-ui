@@ -14,6 +14,7 @@ import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Separator } from '@/components/ui/separator'
+import { cn } from '@/lib/utils'
 import type { Phase, Milestone } from '../../server/types'
 
 function PhaseCard({ phase, canNavigate }: { phase: Phase; canNavigate: boolean }) {
@@ -24,7 +25,12 @@ function PhaseCard({ phase, canNavigate }: { phase: Phase; canNavigate: boolean 
   const progress = planCount > 0 ? Math.round((completedPlans / planCount) * 100) : 0
 
   const content = (
-    <Card className="group cursor-pointer transition-colors hover:border-zinc-600">
+    <Card
+      className={cn(
+        'group transition-colors',
+        canNavigate ? 'cursor-pointer hover:border-zinc-600' : 'cursor-default border-dashed border-zinc-700/70'
+      )}
+    >
       <CardContent className="p-4">
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-center gap-2">
@@ -54,6 +60,11 @@ function PhaseCard({ phase, canNavigate }: { phase: Phase; canNavigate: boolean 
               {phase.metrics.totalMinutes}m total
             </span>
           )}
+          {!canNavigate && (
+            <Badge variant="warning" className="text-[10px]">
+              Roadmap only
+            </Badge>
+          )}
         </div>
         {planCount > 0 && (
           <div className="mt-3 flex items-center gap-2">
@@ -71,8 +82,13 @@ function PhaseCard({ phase, canNavigate }: { phase: Phase; canNavigate: boolean 
     return content
   }
 
+  const phaseHint = phase.dirName || phase.slug
+  const phaseLink = `/phase/${phase.number}${
+    phaseHint ? `?phase=${encodeURIComponent(phaseHint)}` : ''
+  }`
+
   return (
-    <Link to={`/phase/${phase.number}`}>
+    <Link to={phaseLink}>
       {content}
     </Link>
   )
@@ -97,7 +113,6 @@ export function MilestoneView() {
   const milestone = state.milestones?.find(
     (m) => m.version === version || m.version === decodeURIComponent(version ?? '')
   )
-  const realPhaseKeys = new Set((state.phases ?? []).map((p) => String(p.number)))
 
   if (!milestone) {
     return (
@@ -106,7 +121,7 @@ export function MilestoneView() {
         <p className="text-sm text-muted-foreground mt-2">
           Version "{version}" does not match any milestone.
         </p>
-        <Link to="/" className="mt-4 inline-block text-sm text-blue-400 hover:text-blue-300">
+        <Link to="/roadmap" className="mt-4 inline-block text-sm text-blue-400 hover:text-blue-300">
           Back to Roadmap
         </Link>
       </div>
@@ -117,7 +132,7 @@ export function MilestoneView() {
     <div className="space-y-6">
       <Breadcrumb
         items={[
-          { label: 'Roadmap', href: '/' },
+          { label: 'Roadmap', href: '/roadmap' },
           { label: milestone.version },
         ]}
       />
@@ -227,9 +242,9 @@ export function MilestoneView() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {milestone.phases.map((phase) => (
               <PhaseCard
-                key={String(phase.number)}
+                key={`${String(phase.number)}-${phase.dirName || phase.slug || phase.goal}`}
                 phase={phase}
-                canNavigate={realPhaseKeys.has(String(phase.number))}
+                canNavigate={Boolean(phase.dirPath)}
               />
             ))}
           </div>

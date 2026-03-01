@@ -9,6 +9,10 @@ Russian documentation: [README.ru.md](README.ru.md)
 
 ![Roadmap View](docs/screenshots/roadmap.png)
 
+## Short Fork Note
+
+This fork improves real-world `.planning` compatibility: milestone/phase mapping is now more accurate, requirements and roadmap statuses are reconciled, parser edge-cases are handled more robustly, and navigation/live updates are more consistent.
+
 ## Features
 
 - Project dashboard with configuration, status, and session continuity

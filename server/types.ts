@@ -65,7 +65,7 @@ export interface Milestone {
 export interface Requirement {
   id: string
   description: string
-  status: "complete" | "pending"
+  status: "complete" | "in_progress" | "pending"
   section: string
   milestone: string
   fulfilledByPlans?: string[]

@@ -1,4 +1,4 @@
-import { useParams, Link } from 'react-router'
+import { useParams, Link, useLocation } from 'react-router'
 import {
   FileText,
   Clock,
@@ -51,6 +51,7 @@ export function PlanView() {
     phase: string
     plan: string
   }>()
+  const location = useLocation()
   const { state, loading } = useLiveState()
 
   if (loading) {
@@ -67,9 +68,19 @@ export function PlanView() {
 
   if (!state) return null
 
-  const phase = state.phases?.find(
+  const phaseHint = new URLSearchParams(location.search).get('phase')?.toLowerCase().trim()
+  const phaseCandidates = state.phases?.filter(
     (p) => String(p.number) === phaseParam
-  )
+  ) ?? []
+  const phase =
+    (phaseHint
+      ? phaseCandidates.find((p) =>
+          [p.dirName, p.slug]
+            .map((v) => (v ?? '').toLowerCase())
+            .includes(phaseHint)
+        )
+      : undefined) ??
+    phaseCandidates[0]
 
   const plan = phase?.plans?.find(
     (p) => String(p.planNumber) === planParam
@@ -82,7 +93,7 @@ export function PlanView() {
         <p className="text-sm text-muted-foreground mt-2">
           Plan {phaseParam}/{planParam} does not exist.
         </p>
-        <Link to="/" className="mt-4 inline-block text-sm text-blue-400 hover:text-blue-300">
+        <Link to="/roadmap" className="mt-4 inline-block text-sm text-blue-400 hover:text-blue-300">
           Back to Roadmap
         </Link>
       </div>
@@ -90,16 +101,20 @@ export function PlanView() {
   }
 
   const milestone = state.milestones?.find((m) => m.version === phase.milestone)
+  const phaseRef = phase.dirName || phase.slug
+  const phaseHref = `/phase/${phase.number}${
+    phaseRef ? `?phase=${encodeURIComponent(phaseRef)}` : ''
+  }`
 
   return (
     <div className="space-y-6">
       <Breadcrumb
         items={[
-          { label: 'Roadmap', href: '/' },
+          { label: 'Roadmap', href: '/roadmap' },
           ...(milestone
             ? [{ label: milestone.version, href: `/milestone/${encodeURIComponent(milestone.version)}` }]
             : []),
-          { label: `Phase ${phase.number}`, href: `/phase/${phase.number}` },
+          { label: `Phase ${phase.number}`, href: phaseHref },
           { label: `Plan ${plan.planNumber}` },
         ]}
       />

@@ -33,7 +33,15 @@ export function parsePlan(
   const { data, content } = parseFrontmatter(raw)
 
   const phase = String(data.phase ?? "")
-  const planNumber = typeof data.plan === "number" ? data.plan : parseInt(String(data.plan ?? "0"), 10)
+  const frontmatterPlanNumber =
+    typeof data.plan === "number"
+      ? data.plan
+      : parseInt(String(data.plan ?? "0"), 10)
+  const planNumberFromFile = parsePlanNumberFromFileName(fileName)
+  const planNumber =
+    Number.isFinite(frontmatterPlanNumber) && frontmatterPlanNumber > 0
+      ? frontmatterPlanNumber
+      : planNumberFromFile
   const type = String(data.type ?? "execute")
   const wave = typeof data.wave === "number" ? data.wave : parseInt(String(data.wave ?? "1"), 10)
   const dependsOn = asStringArray(data.depends_on)
@@ -71,6 +79,13 @@ export function parsePlan(
     tasks,
     status: "planned", // Default; will be upgraded by state builder when summary exists
   }
+}
+
+function parsePlanNumberFromFileName(fileName: string): number {
+  const match = fileName.match(/^(\d+)-(\d+)-PLAN\.md$/i)
+  if (!match?.[2]) return 0
+  const parsed = parseInt(match[2], 10)
+  return Number.isFinite(parsed) ? parsed : 0
 }
 
 /** Extract content between <tag>...</tag> */

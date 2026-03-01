@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useParams, Link } from 'react-router'
+import { useParams, Link, useLocation } from 'react-router'
 import {
   ChevronRight,
   ChevronDown,
@@ -80,8 +80,13 @@ function VerificationCard({ verification }: { verification: PhaseVerification })
 }
 
 function PlanCard({ plan, phase }: { plan: Plan; phase: Phase }) {
+  const phaseHint = phase.dirName || phase.slug
+  const planLink = `/plan/${phase.number}/${plan.planNumber}${
+    phaseHint ? `?phase=${encodeURIComponent(phaseHint)}` : ''
+  }`
+
   return (
-    <Link to={`/plan/${phase.number}/${plan.planNumber}`}>
+    <Link to={planLink}>
       <Card className="group cursor-pointer transition-colors hover:border-zinc-600">
         <CardContent className="p-4">
           <div className="flex items-start justify-between mb-2">
@@ -152,6 +157,7 @@ function PlanCard({ plan, phase }: { plan: Plan; phase: Phase }) {
 
 export function PhaseView() {
   const { number } = useParams<{ number: string }>()
+  const location = useLocation()
   const { state, loading } = useLiveState()
 
   if (loading) {
@@ -166,9 +172,17 @@ export function PhaseView() {
 
   if (!state) return null
 
-  const phase = state.phases?.find(
-    (p) => String(p.number) === number
-  )
+  const phaseHint = new URLSearchParams(location.search).get('phase')?.toLowerCase().trim()
+  const phaseCandidates = state.phases?.filter((p) => String(p.number) === number) ?? []
+  const phase =
+    (phaseHint
+      ? phaseCandidates.find((p) =>
+          [p.dirName, p.slug]
+            .map((v) => (v ?? '').toLowerCase())
+            .includes(phaseHint)
+        )
+      : undefined) ??
+    phaseCandidates[0]
 
   if (!phase) {
     return (
@@ -177,7 +191,7 @@ export function PhaseView() {
         <p className="text-sm text-muted-foreground mt-2">
           Phase {number} does not exist.
         </p>
-        <Link to="/" className="mt-4 inline-block text-sm text-blue-400 hover:text-blue-300">
+        <Link to="/roadmap" className="mt-4 inline-block text-sm text-blue-400 hover:text-blue-300">
           Back to Roadmap
         </Link>
       </div>
@@ -207,7 +221,7 @@ export function PhaseView() {
     <div className="space-y-6">
       <Breadcrumb
         items={[
-          { label: 'Roadmap', href: '/' },
+          { label: 'Roadmap', href: '/roadmap' },
           ...(milestone
             ? [{ label: milestone.version, href: `/milestone/${encodeURIComponent(milestone.version)}` }]
             : []),

@@ -9,6 +9,10 @@ English documentation: [README.md](README.md)
 
 ![Roadmap View](docs/screenshots/roadmap.png)
 
+## Коротко про форк
+
+В этом форке улучшена совместимость с реальными `.planning`-проектами: точнее сопоставляются milestones и фазы, согласованы статусы Requirements и Roadmap, устойчивее обработаны edge-case парсеров, и навигация/live-обновления работают предсказуемее.
+
 ## Возможности
 
 - Дашборд проекта с конфигурацией, статусом и continuity-секцией

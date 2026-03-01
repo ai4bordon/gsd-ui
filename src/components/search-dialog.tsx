@@ -54,7 +54,7 @@ function getResultHref(entry: SearchEntry): string {
     return `/phase/${parsePhaseNum(entry.phase)}`
   }
   if (entry.type === 'todo') return '/todos'
-  if (entry.type === 'requirement') return '/'
+  if (entry.type === 'requirement') return '/requirements'
   if (entry.type === 'research') return `/document/${entry.path}`
   return '/'
 }

@@ -68,8 +68,7 @@ export async function buildInitialState(
   }
 
   // Parse roadmap and create milestones
-  const roadmapParsedBase = roadmapRaw ? parseRoadmap(roadmapRaw) : []
-  const roadmapParsed = await mergeMilestoneRoadmaps(planningPath, roadmapParsedBase)
+  const roadmapParsed = await loadMergedRoadmap(planningPath, roadmapRaw)
   let roadmapMilestones: Milestone[] = []
   if (roadmapParsed.length > 0) {
     roadmapMilestones = roadmapMilestonesToMilestones(roadmapParsed)
@@ -89,7 +88,8 @@ export async function buildInitialState(
   // Assign phases to milestones
   state.milestones = assignPhasesToMilestones(
     roadmapMilestones,
-    state.phases
+    state.phases,
+    roadmapParsed
   )
   syncMilestonesFromRequirements(state)
 
@@ -103,6 +103,7 @@ export async function buildInitialState(
 
   // Cross-reference requirements to plans
   crossReferenceRequirements(state)
+  reconcileRequirementStatusWithExecution(state)
 
   // Extract decisions from summaries
   state.decisions = extractAllDecisions(state.phases)
@@ -117,6 +118,16 @@ export async function buildInitialState(
   applyStateFallbacks(state, roadmapPhaseCount)
 
   return state
+}
+
+async function loadMergedRoadmap(
+  planningPath: string,
+  primaryRoadmapRaw?: string | null
+): Promise<ReturnType<typeof parseRoadmap>> {
+  const roadmapRaw =
+    primaryRoadmapRaw ?? (await readFileSafe(join(planningPath, "ROADMAP.md")))
+  const roadmapParsedBase = roadmapRaw ? parseRoadmap(roadmapRaw) : []
+  return mergeMilestoneRoadmaps(planningPath, roadmapParsedBase)
 }
 
 async function mergeMilestoneRoadmaps(
@@ -266,10 +277,14 @@ export async function updateStateForFile(
     state.phases = await parsePhases(phasesDir, state.planningPath)
     copyPhaseMetadata(previousPhases, state.phases)
 
+    const roadmapParsed = await loadMergedRoadmap(state.planningPath)
+    enrichPhasesFromRoadmap(state.phases, roadmapParsed)
+
     // Re-assign to milestones
     state.milestones = assignPhasesToMilestones(
       state.milestones.map((m) => ({ ...m, phases: [] })),
-      state.phases
+      state.phases,
+      roadmapParsed
     )
     syncMilestonesFromRequirements(state)
 
@@ -288,6 +303,7 @@ export async function updateStateForFile(
     }
 
     crossReferenceRequirements(state)
+    reconcileRequirementStatusWithExecution(state)
     state.searchIndex = buildSearchIndex(state)
     return
   }
@@ -324,30 +340,50 @@ function enrichPhasesFromRoadmap(
   phases: Phase[],
   roadmapMilestones: ReturnType<typeof parseRoadmap>
 ): void {
-  for (const milestone of roadmapMilestones) {
-    for (const phaseStub of milestone.phases) {
-      const target = phases.find((phase) =>
-        samePhaseNumber(phase.number, phaseStub.number)
-      )
-      if (!target) continue
-      if (!target.goal && phaseStub.goal) {
-        target.goal = phaseStub.goal
+  const allStubs = roadmapMilestones.flatMap((m) => m.phases)
+
+  for (const phase of phases) {
+    const candidates = allStubs.filter((stub) =>
+      samePhaseNumber(stub.number, phase.number)
+    )
+    if (candidates.length === 0) continue
+
+    let bestStub: typeof candidates[number] | undefined = candidates[0]
+    let bestScore = -Infinity
+    for (const stub of candidates) {
+      const score = scorePhaseCandidate(stub, phase)
+      if (score > bestScore) {
+        bestScore = score
+        bestStub = stub
       }
-      if (!target.slug && phaseStub.slug) {
-        target.slug = phaseStub.slug
-      }
+    }
+
+    if (!bestStub) continue
+
+    if (!phase.goal && bestStub.goal) {
+      phase.goal = bestStub.goal
+    }
+    if (!phase.slug && bestStub.slug) {
+      phase.slug = bestStub.slug
     }
   }
 }
 
 function copyPhaseMetadata(previous: Phase[], next: Phase[]): void {
-  const previousByNumber = new Map<string, Phase>()
+  const previousByDir = new Map<string, Phase>()
+  const previousByNumber = new Map<string, Phase[]>()
   for (const phase of previous) {
-    previousByNumber.set(phaseNumberKey(phase.number), phase)
+    previousByDir.set(phase.dirName, phase)
+    const key = phaseNumberKey(phase.number)
+    const list = previousByNumber.get(key) ?? []
+    list.push(phase)
+    previousByNumber.set(key, list)
   }
 
   for (const phase of next) {
-    const old = previousByNumber.get(phaseNumberKey(phase.number))
+    const oldByDir = previousByDir.get(phase.dirName)
+    const oldByNum = previousByNumber.get(phaseNumberKey(phase.number))?.[0]
+    const old = oldByDir ?? oldByNum
     if (!old) continue
     if (!phase.goal && old.goal) {
       phase.goal = old.goal
@@ -461,6 +497,30 @@ function computeVelocityFromPhases(phases: Phase[]): {
         : 0,
     totalDuration,
     phaseMetrics,
+  }
+}
+
+function computePhaseMetricsFromPlans(plans: Plan[]): Phase["metrics"] | undefined {
+  if (plans.length === 0) return undefined
+
+  let totalDuration = 0
+  let plansWithDuration = 0
+
+  for (const plan of plans) {
+    if (!plan.summary) continue
+    const minutes = parseDurationMinutes(plan.summary.duration)
+    if (minutes == null || Number.isNaN(minutes) || minutes <= 0) continue
+    totalDuration += minutes
+    plansWithDuration += 1
+  }
+
+  return {
+    planCount: plans.length,
+    totalMinutes: Math.round(totalDuration),
+    avgPerPlan:
+      plansWithDuration > 0
+        ? Math.round(totalDuration / plansWithDuration)
+        : 0,
   }
 }
 
@@ -688,16 +748,8 @@ async function parsePhaseDirectory(
   // Derive phase status
   const phaseStatus = derivePhaseStatus(plans, verification, research)
 
-  // Calculate metrics from state.md phase metrics table (or from plan data)
-  const planCount = plans.length
-  const metrics =
-    planCount > 0
-      ? {
-          planCount,
-          totalMinutes: 0,
-          avgPerPlan: 0,
-        }
-      : undefined
+  // Calculate phase metrics from plan summary durations
+  const metrics = computePhaseMetricsFromPlans(plans)
 
   // Determine milestone from plan frontmatter or directory path
   const milestone = "" // Will be assigned by assignPhasesToMilestones
@@ -736,10 +788,25 @@ function derivePhaseStatus(
  */
 function assignPhasesToMilestones(
   milestones: Milestone[],
-  phases: Phase[]
+  phases: Phase[],
+  roadmapMilestones: ReturnType<typeof parseRoadmap> = []
 ): Milestone[] {
+  const roadmapByVersion = new Map(
+    roadmapMilestones.map((m) => [m.version, m])
+  )
+
   for (const milestone of milestones) {
     milestone.phases = []
+
+    const roadmapMilestone = roadmapByVersion.get(milestone.version)
+    if (roadmapMilestone && roadmapMilestone.phases.length > 0) {
+      milestone.phases = mapMilestonePhasesFromRoadmap(
+        roadmapMilestone,
+        phases,
+        milestone.version
+      )
+      continue
+    }
 
     // Parse phase range: "Phases 1-3", "Phase 4", "Phases 40-45"
     const rangeMatch = milestone.phaseRange.match(
@@ -765,6 +832,160 @@ function assignPhasesToMilestones(
   }
 
   return milestones
+}
+
+function mapMilestonePhasesFromRoadmap(
+  roadmapMilestone: ReturnType<typeof parseRoadmap>[number],
+  phases: Phase[],
+  milestoneVersion: string
+): Phase[] {
+  const selected: Phase[] = []
+  const usedDirPaths = new Set<string>()
+
+  for (const stub of roadmapMilestone.phases) {
+    const candidates = phases.filter(
+      (phase) =>
+        samePhaseNumber(phase.number, stub.number) &&
+        !usedDirPaths.has(phase.dirPath)
+    )
+
+    const best = pickBestPhaseCandidate(stub, candidates)
+    const shouldMapToRealPhase =
+      !!best && (stub.planCount > 0 || best.score >= 4)
+
+    if (shouldMapToRealPhase && best?.phase) {
+      best.phase.milestone = milestoneVersion
+      selected.push(best.phase)
+      usedDirPaths.add(best.phase.dirPath)
+      continue
+    }
+
+    selected.push(createVirtualPhaseFromRoadmapStub(stub, milestoneVersion))
+  }
+
+  return selected
+}
+
+function pickBestPhaseCandidate(
+  stub: ReturnType<typeof parseRoadmap>[number]["phases"][number],
+  candidates: Phase[]
+): { phase: Phase; score: number } | null {
+  if (candidates.length === 0) return null
+
+  let best: { phase: Phase; score: number } | null = null
+  for (const candidate of candidates) {
+    const score = scorePhaseCandidate(stub, candidate)
+    if (!best || score > best.score) {
+      best = { phase: candidate, score }
+    }
+  }
+
+  return best
+}
+
+function scorePhaseCandidate(
+  stub: ReturnType<typeof parseRoadmap>[number]["phases"][number],
+  phase: Phase
+): number {
+  let score = 0
+
+  const phasePlanCount = phase.plans.length
+  if (stub.planCount > 0) {
+    if (phasePlanCount === stub.planCount) {
+      score += 8
+    } else {
+      score += Math.max(0, 5 - Math.abs(phasePlanCount - stub.planCount))
+    }
+  } else if (phasePlanCount === 0) {
+    score += 2
+  }
+
+  const stubSlug = normalizeMatchText(stub.slug)
+  const phaseSlug = normalizeMatchText(phase.slug)
+  const phaseIdentity = normalizeMatchText(
+    `${phase.goal} ${phase.slug} ${phase.dirName}`
+  )
+
+  if (stubSlug && phaseSlug) {
+    if (stubSlug === phaseSlug) {
+      score += 5
+    } else if (phaseIdentity.includes(stubSlug)) {
+      score += 2
+    }
+  }
+
+  const similarity = tokenSimilarity(stub.goal, `${phase.goal} ${phase.slug} ${phase.dirName}`)
+  score += similarity * 6
+
+  if (phase.status === "verified") {
+    score += 0.25
+  }
+
+  return score
+}
+
+function createVirtualPhaseFromRoadmapStub(
+  stub: ReturnType<typeof parseRoadmap>[number]["phases"][number],
+  milestoneVersion: string
+): Phase {
+  const placeholderPlans: Plan[] = Array.from(
+    { length: Math.max(0, stub.planCount) },
+    (_, idx) => ({
+      phase: String(stub.number),
+      planNumber: idx + 1,
+      fileName: `${String(stub.number).padStart(2, "0")}-${String(idx + 1).padStart(2, "0")}-PLAN.md`,
+      filePath: "",
+      type: "execute",
+      wave: 0,
+      dependsOn: [],
+      filesModified: [],
+      autonomous: false,
+      requirements: [],
+      mustHaves: {
+        truths: [],
+        artifacts: [],
+        keyLinks: [],
+      },
+      objective: null,
+      context: null,
+      tasks: null,
+      status: "planned",
+    })
+  )
+
+  return {
+    number: stub.number,
+    slug: stub.slug,
+    dirName: "",
+    dirPath: "",
+    goal: stub.goal,
+    milestone: milestoneVersion,
+    status: placeholderPlans.length > 0 ? "executing" : "planned",
+    plans: placeholderPlans,
+  }
+}
+
+function normalizeMatchText(value: string | undefined): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-zа-я0-9]+/gi, " ")
+    .trim()
+}
+
+function tokenSimilarity(a: string | undefined, b: string | undefined): number {
+  const tokensA = new Set(normalizeMatchText(a).split(/\s+/).filter(Boolean))
+  const tokensB = new Set(normalizeMatchText(b).split(/\s+/).filter(Boolean))
+  if (tokensA.size === 0 || tokensB.size === 0) return 0
+
+  let intersection = 0
+  for (const token of tokensA) {
+    if (tokensB.has(token)) {
+      intersection += 1
+    }
+  }
+
+  const union = new Set([...tokensA, ...tokensB]).size
+  return union > 0 ? intersection / union : 0
 }
 
 function syncMilestonesFromRequirements(state: GsdState): void {
@@ -949,6 +1170,107 @@ function crossReferenceRequirements(state: GsdState): void {
       }
     }
   }
+}
+
+function reconcileRequirementStatusWithExecution(state: GsdState): void {
+  const phaseByMilestoneAndNumber = new Map<string, Phase>()
+  for (const milestone of state.milestones) {
+    for (const phase of milestone.phases) {
+      const key = `${milestone.version.toLowerCase()}::${String(phase.number).toLowerCase()}`
+      phaseByMilestoneAndNumber.set(key, phase)
+    }
+  }
+
+  const phaseByNumber = new Map<string, Phase[]>()
+  for (const phase of state.phases) {
+    const key = String(phase.number).toLowerCase()
+    const list = phaseByNumber.get(key) ?? []
+    list.push(phase)
+    phaseByNumber.set(key, list)
+  }
+
+  for (const req of state.requirements) {
+    if (req.status === "complete") continue
+    const refs = req.fulfilledByPlans ?? []
+    if (refs.length === 0) continue
+
+    let hasCompleteEvidence = false
+    let hasInProgressEvidence = false
+    for (const ref of refs) {
+      const fromPhaseRef = parseMilestonePhaseRef(ref)
+      if (fromPhaseRef) {
+        const key = `${fromPhaseRef.milestone.toLowerCase()}::${fromPhaseRef.phase.toLowerCase()}`
+        const matchedPhase =
+          phaseByMilestoneAndNumber.get(key) ??
+          phaseByMilestoneAndNumber.get(`${fromPhaseRef.milestone.toLowerCase()}::${String(parseInt(fromPhaseRef.phase, 10))}`)
+
+        if (matchedPhase) {
+          if (matchedPhase.status === "verified" || matchedPhase.status === "summarized") {
+            hasCompleteEvidence = true
+            break
+          }
+          if (matchedPhase.status === "executing") {
+            hasInProgressEvidence = true
+          }
+        }
+        continue
+      }
+
+      const fromPlanRef = parsePlanRef(ref)
+      if (fromPlanRef) {
+        const phaseCandidates = phaseByNumber.get(fromPlanRef.phase.toLowerCase()) ?? []
+        const matchingPlan = phaseCandidates
+          .flatMap((phase) => phase.plans)
+          .find((plan) => plan.planNumber === fromPlanRef.plan)
+        if (matchingPlan?.status === "complete") {
+          hasCompleteEvidence = true
+          break
+        }
+        if (matchingPlan?.status === "planned") {
+          hasInProgressEvidence = true
+        }
+      }
+    }
+
+    if (hasCompleteEvidence) {
+      req.status = "complete"
+    } else if (hasInProgressEvidence) {
+      req.status = "in_progress"
+    } else {
+      req.status = "pending"
+    }
+  }
+}
+
+function parseMilestonePhaseRef(
+  ref: string
+): { milestone: string; phase: string } | null {
+  const match = ref.match(/\b(v\d+(?:\.\d+)*)\s*\/\s*phase\s*([\d.]+)\b/i)
+  if (!match?.[1] || !match[2]) return null
+  return {
+    milestone: match[1],
+    phase: match[2],
+  }
+}
+
+function parsePlanRef(ref: string): { phase: string; plan: number } | null {
+  const direct = ref.match(/^([^/]+)\/(\d+)$/)
+  if (direct?.[1] && direct[2]) {
+    return {
+      phase: String(parseInt(direct[1], 10)),
+      plan: parseInt(direct[2], 10),
+    }
+  }
+
+  const legacyFileRef = ref.match(/^([^/]+)\/(\d+)-(\d+)-PLAN\.md$/i)
+  if (legacyFileRef?.[2] && legacyFileRef[3]) {
+    return {
+      phase: String(parseInt(legacyFileRef[2], 10)),
+      plan: parseInt(legacyFileRef[3], 10),
+    }
+  }
+
+  return null
 }
 
 /**

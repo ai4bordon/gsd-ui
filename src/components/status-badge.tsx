@@ -45,7 +45,7 @@ export function StatusBadge({ status, className }: StatusBadgeProps) {
   return (
     <Badge
       variant="outline"
-      className={cn(config.className, className)}
+      className={cn('whitespace-nowrap', config.className, className)}
     >
       {status === 'verified' && <CheckCircle2 size={12} className="mr-1" />}
       {label}

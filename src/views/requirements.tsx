@@ -141,7 +141,7 @@ export function RequirementsView() {
                             <td className="py-3 px-4 font-mono text-xs">{req.id}</td>
                             <td className="py-3 px-4">{req.description}</td>
                             <td className="py-3 px-4">
-                              <StatusBadge status={req.status === 'complete' ? 'complete' : 'pending'} />
+                              <StatusBadge status={req.status} />
                             </td>
                             <td className="py-3 px-4 text-xs text-muted-foreground">{req.milestone}</td>
                             <td className="py-3 px-4">
