@@ -175,6 +175,26 @@ export function RoadmapView() {
     ? `${Math.round(projectState.velocity.avgDuration)}m`
     : '--'
 
+  const activeMilestone =
+    milestones.find((m) => m.status === 'in_progress' && m.category === 'go_live_gate') ??
+    milestones.find((m) => m.status === 'in_progress') ??
+    milestones.find((m) => m.category === 'go_live_gate') ??
+    milestones[0]
+
+  const computedDonePhases =
+    activeMilestone?.phases?.filter((p) => p.status === 'summarized' || p.status === 'verified').length ?? 0
+  const computedTotalPhases = activeMilestone?.phases?.length ?? 0
+  const computedProgressPercent =
+    computedTotalPhases > 0
+      ? Math.round((computedDonePhases / computedTotalPhases) * 100)
+      : undefined
+
+  const bannerDone = computedTotalPhases > 0 ? computedDonePhases : projectState?.currentPhase ?? 0
+  const bannerTotal = computedTotalPhases > 0 ? computedTotalPhases : projectState?.totalPhases ?? 0
+  const bannerPercent = computedProgressPercent ?? projectState?.progressPercent ?? 0
+  const bannerTitle =
+    activeMilestone?.name || activeMilestone?.version || projectState?.milestoneName || 'Project Roadmap'
+
   return (
     <div className="space-y-8">
       {/* Current Status Banner */}
@@ -184,26 +204,26 @@ export function RoadmapView() {
             <div className="flex items-start justify-between">
               <div>
                 <h1 className="text-2xl font-bold mb-1">
-                  {projectState.milestoneName || 'Project Roadmap'}
+                  {bannerTitle}
                 </h1>
                 <p className="text-sm text-muted-foreground mb-4">
-                  Phase {projectState.currentPhase} of {projectState.totalPhases}
+                  Phase {bannerDone} of {bannerTotal}
                   {projectState.phaseName && ` -- ${projectState.phaseName}`}
                 </p>
                 <div className="flex items-center gap-4">
                   <Progress
-                    value={projectState.progressPercent}
+                    value={bannerPercent}
                     className="w-48"
                     indicatorClassName={cn(
-                      projectState.progressPercent >= 100
+                      bannerPercent >= 100
                         ? 'bg-emerald-500'
-                        : projectState.progressPercent >= 50
+                        : bannerPercent >= 50
                           ? 'bg-blue-500'
                           : 'bg-amber-500'
                     )}
                   />
                   <span className="text-sm font-mono text-muted-foreground">
-                    {projectState.progressPercent}%
+                    {bannerPercent}%
                   </span>
                 </div>
               </div>
